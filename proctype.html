@@ -1,0 +1,239 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>item.proc_type decoder</title>
+<style>
+  :root {
+    color-scheme: dark light;
+    --bg: #1e1e1e;
+    --fg: #e8e8e8;
+    --muted: #888;
+    --accent: #6cf;
+    --row: #2a2a2a;
+    --row-alt: #242424;
+    --border: #3a3a3a;
+  }
+  body {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    background: var(--bg);
+    color: var(--fg);
+    margin: 2rem auto;
+    max-width: 720px;
+    padding: 0 1rem;
+    line-height: 1.45;
+  }
+  h1 { font-size: 1.25rem; margin-top: 0; }
+  h2 { font-size: 1rem; margin: 1.5rem 0 0.5rem; color: var(--accent); }
+  .inputs { display: flex; gap: 0.75rem; align-items: center; flex-wrap: wrap; }
+  .inputs label { color: var(--muted); }
+  input[type="text"] {
+    background: #111;
+    color: var(--fg);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 0.4rem 0.6rem;
+    font: inherit;
+    width: 12ch;
+    text-align: right;
+  }
+  input[type="text"]:focus { outline: 1px solid var(--accent); }
+  table { width: 100%; border-collapse: collapse; margin-top: 0.25rem; }
+  th, td {
+    text-align: left;
+    padding: 0.35rem 0.6rem;
+    border-bottom: 1px solid var(--border);
+    vertical-align: middle;
+  }
+  th { color: var(--muted); font-weight: normal; font-size: 0.85rem; }
+  tr.set td { background: #1a3040; }
+  tr:nth-child(even) td { background-color: var(--row-alt); }
+  tr:nth-child(even).set td { background: #1a3040; }
+  td.mask { color: var(--accent); width: 5ch; }
+  td.bit  { color: var(--muted); width: 3ch; text-align: right; }
+  td.name { font-weight: bold; }
+  td.desc { color: var(--muted); font-size: 0.85rem; }
+  td.cb   { width: 2ch; text-align: center; }
+  .summary {
+    margin-top: 1rem;
+    padding: 0.75rem 1rem;
+    background: var(--row);
+    border-left: 3px solid var(--accent);
+    border-radius: 3px;
+    white-space: pre-wrap;
+  }
+  .state {
+    display: inline-block;
+    margin-left: 0.5rem;
+    padding: 0.1rem 0.5rem;
+    background: #333;
+    border-radius: 3px;
+    font-size: 0.85rem;
+    color: var(--accent);
+  }
+  .warn { color: #f88; }
+  .note { color: var(--muted); font-size: 0.85rem; margin-top: 0.5rem; }
+</style>
+</head>
+<body>
+
+<h1>item.proc_type decoder</h1>
+
+<div class="inputs">
+  <label>decimal <input id="dec" type="text" value="0"></label>
+  <label>hex <input id="hex" type="text" value="0x0"></label>
+  <label>binary <input id="bin" type="text" value="0b0"></label>
+  <span id="state" class="state">state 0</span>
+</div>
+
+<h2>Flags</h2>
+<table>
+  <thead>
+    <tr><th></th><th>mask</th><th>bit</th><th>name</th><th>meaning</th></tr>
+  </thead>
+  <tbody id="flags"></tbody>
+</table>
+
+<h2>Summary</h2>
+<div id="summary" class="summary">no flags set — plain unrestricted item</div>
+
+<p class="note">
+  Type a number in any base (e.g. <code>328</code>, <code>0x148</code>,
+  <code>0b101001000</code>) or toggle the checkboxes; the other fields update
+  live. The "state" badge shows what <code>Proctype2State</code> would send to
+  other clients (<code>0</code> normal, <code>1</code> bound, <code>2</code>
+  will-bind, <code>3</code> both bits).
+</p>
+
+<script>
+const FLAGS = [
+  { mask: 0x001, bit: 0,  name: "no_drop_on_death",       desc: "Cannot drop on death (& 3 / & 0x11 in DropItemOnDeath*)" },
+  { mask: 0x002, bit: 1,  name: "no_drop",                desc: "Player cannot manually drop the item" },
+  { mask: 0x004, bit: 2,  name: "no_sell",                desc: "Cannot be sold for money (ItemToMoney)" },
+  { mask: 0x008, bit: 3,  name: "no_script_drop",         desc: "AI scripts cannot spawn this template as ground loot via the lua __DropItem bridge" },
+  { mask: 0x010, bit: 4,  name: "no_trade",               desc: "Cannot be traded / put up in personal market" },
+  { mask: 0x020, bit: 5,  name: "(unused)",               desc: "No references found in the binary" },
+  { mask: 0x040, bit: 6,  name: "bind_pending",           desc: "Will bind on equip / first use; cleared once 0x80 is set" },
+  { mask: 0x080, bit: 7,  name: "bound",                  desc: "Item is bound to the player; also = pet-feed gate (bound non-food rejected)" },
+  { mask: 0x100, bit: 8,  name: "unique",                 desc: "Singleton — only meaningful when pile_limit == 1" },
+  { mask: 0x200, bit: 9,  name: "destroy_on_leave_scene", desc: "Wiped when the player leaves the current scene" },
+  { mask: 0x400, bit: 10, name: "auto_use_on_obtain",     desc: "AutoUseItem fires immediately after the item is added to inventory" },
+];
+
+const KNOWN = {
+  0x000: "plain unrestricted item",
+  0x040: "bind-on-equip / bind-on-use template state (most BoE gear ships like this)",
+  0x097: "the standard 'bind now' bundle (BindOnEquip / BindItem / Equip*)",
+  0x092: "MessageHandler 'must FreeItem instead of world-drop' filter",
+  0x011: "DropItemOnDeath(XID) skip mask (no_trade | no_drop_on_death)",
+  0x003: "DropItemOnDeath(n,n) skip mask (no_drop | no_drop_on_death)",
+  0x017: "DestroyBindItem tombstone placeholder (decimal 23)",
+};
+
+const decEl = document.getElementById("dec");
+const hexEl = document.getElementById("hex");
+const binEl = document.getElementById("bin");
+const stateEl = document.getElementById("state");
+const summaryEl = document.getElementById("summary");
+const flagsTbody = document.getElementById("flags");
+
+const checkboxes = {};
+for (const f of FLAGS) {
+  const tr = document.createElement("tr");
+  tr.dataset.mask = f.mask;
+  tr.innerHTML = `
+    <td class="cb"><input type="checkbox" data-mask="${f.mask}"></td>
+    <td class="mask">0x${f.mask.toString(16).padStart(3, "0")}</td>
+    <td class="bit">${f.bit}</td>
+    <td class="name">${f.name}</td>
+    <td class="desc">${f.desc}</td>`;
+  flagsTbody.appendChild(tr);
+  const cb = tr.querySelector("input");
+  cb.addEventListener("change", () => {
+    let v = currentValue();
+    if (cb.checked) v |= f.mask; else v &= ~f.mask;
+    setValue(v);
+  });
+  checkboxes[f.mask] = cb;
+}
+
+function parseAny(s) {
+  if (s == null) return NaN;
+  s = String(s).trim().replace(/_/g, "");
+  if (s === "") return NaN;
+  let neg = false;
+  if (s.startsWith("-")) { neg = true; s = s.slice(1); }
+  let n;
+  if (/^0x[0-9a-f]+$/i.test(s))      n = parseInt(s.slice(2), 16);
+  else if (/^0b[01]+$/i.test(s))     n = parseInt(s.slice(2), 2);
+  else if (/^0o[0-7]+$/i.test(s))    n = parseInt(s.slice(2), 8);
+  else if (/^[0-9]+$/.test(s))       n = parseInt(s, 10);
+  else if (/^[0-9a-f]+$/i.test(s))   n = parseInt(s, 16);
+  else return NaN;
+  return neg ? -n : n;
+}
+
+function currentValue() { return parseAny(decEl.value) | 0; }
+
+function setValue(v) {
+  if (!Number.isFinite(v)) v = 0;
+  v = v | 0;
+  decEl.value = v.toString(10);
+  hexEl.value = "0x" + (v >>> 0).toString(16);
+  binEl.value = "0b" + (v >>> 0).toString(2);
+  for (const f of FLAGS) checkboxes[f.mask].checked = (v & f.mask) !== 0;
+  for (const tr of flagsTbody.children) {
+    const m = +tr.dataset.mask;
+    tr.classList.toggle("set", (v & m) !== 0);
+  }
+  let state = 0;
+  if (v & 0x80) state |= 1;
+  if (v & 0x40) state |= 2;
+  const stateNames = ["normal", "bound", "will bind", "both (unusual)"];
+  stateEl.textContent = `state ${state} — ${stateNames[state]}`;
+  renderSummary(v);
+}
+
+function renderSummary(v) {
+  const set = FLAGS.filter(f => v & f.mask);
+  const lines = [];
+  lines.push(`value: ${v}  (0x${(v >>> 0).toString(16)}, 0b${(v >>> 0).toString(2)})`);
+  if (set.length === 0) {
+    lines.push("");
+    lines.push("no flags set — plain unrestricted item");
+  } else {
+    lines.push("");
+    lines.push("set flags:");
+    for (const f of set) {
+      lines.push(`  0x${f.mask.toString(16).padStart(3, "0")}  ${f.name.padEnd(24)} ${f.desc}`);
+    }
+  }
+  const unknownBits = v & ~FLAGS.reduce((a, f) => a | f.mask, 0);
+  if (unknownBits) {
+    lines.push("");
+    lines.push(`! unknown bits set: 0x${unknownBits.toString(16)} — not used by known proc_type code paths`);
+  }
+  if ((v & 0x80) && (v & 0x40)) {
+    lines.push("");
+    lines.push("! both bound (0x80) and bind_pending (0x40) are set — these are mutually exclusive in practice");
+  }
+  if ((v & 0x80) && !(v & 0x97 & ~0x80)) {
+    lines.push("");
+    lines.push("note: bound bit is set without the usual 0x97 restriction bundle — item will display as 'bound' but is still droppable/sellable/tradeable");
+  }
+  if (KNOWN[v]) {
+    lines.push("");
+    lines.push(`known constant: ${KNOWN[v]}`);
+  }
+  summaryEl.textContent = lines.join("\n");
+}
+
+decEl.addEventListener("input", () => { const v = parseAny(decEl.value); if (Number.isFinite(v)) setValue(v); });
+hexEl.addEventListener("input", () => { const v = parseAny(hexEl.value); if (Number.isFinite(v)) setValue(v); });
+binEl.addEventListener("input", () => { const v = parseAny(binEl.value); if (Number.isFinite(v)) setValue(v); });
+
+setValue(0);
+</script>
+
+</body>
+</html>
